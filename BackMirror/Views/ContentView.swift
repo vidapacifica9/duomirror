@@ -7,6 +7,7 @@ struct ContentView: View {
     
     @State private var showCopiedAlert = false
     @State private var showPreview = true
+    @State private var isHelpExpanded = false
     
     var body: some View {
         NavigationView {
@@ -19,9 +20,10 @@ struct ContentView: View {
                         // Status Banner
                         statusHeaderView
                         
-                        // QR Code Card
+                        // QR Code Card & Troubleshooting Guide
                         if let urlString = server.localURLString {
                             qrCodeCard(urlString: urlString)
+                            connectionHelpCard
                         } else {
                             noNetworkCard
                         }
@@ -96,7 +98,9 @@ struct ContentView: View {
     }
     
     private func qrCodeCard(urlString: String) -> some View {
-        VStack(spacing: 16) {
+        let isHotspot = server.localIPAddress?.hasPrefix("172.20.10.") == true
+        
+        return VStack(spacing: 16) {
             Text("Scan with 2nd Phone")
                 .font(.headline)
             
@@ -111,7 +115,22 @@ struct ContentView: View {
                     .frame(width: 190, height: 190)
             }
             
-            Text("Open native camera on iPhone, Android, iPad, or laptop to view instant mirror.")
+            // Network Mode Indicator
+            HStack(spacing: 6) {
+                Image(systemName: isHotspot ? "personalhotspot" : "wifi")
+                    .foregroundColor(isHotspot ? .green : .blue)
+                Text(isHotspot ? "Personal Hotspot Active" : "Same Wi-Fi Required")
+                    .font(.caption.bold())
+                    .foregroundColor(isHotspot ? .green : .blue)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background((isHotspot ? Color.green : Color.blue).opacity(0.12))
+            .cornerRadius(12)
+            
+            Text(isHotspot
+                 ? "Friend must connect to this iPhone's Hotspot Wi-Fi before scanning."
+                 : "Friend's phone must be on the same Wi-Fi network (not on 5G/LTE cellular).")
                 .font(.footnote)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -147,6 +166,55 @@ struct ContentView: View {
         .background(Color(UIColor.secondarySystemGroupedBackground))
         .cornerRadius(20)
         .shadow(color: Color.black.opacity(0.04), radius: 6, y: 2)
+    }
+    
+    private var connectionHelpCard: some View {
+        DisclosureGroup(
+            isExpanded: $isHelpExpanded,
+            content: {
+                VStack(alignment: .leading, spacing: 10) {
+                    Divider().padding(.vertical, 4)
+                    
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label("1. Same Wi-Fi Network Required", systemImage: "wifi")
+                            .font(.caption.bold())
+                        Text("DuoMirror streams directly peer-to-peer with zero internet latency. If your friend is on Cellular (5G/LTE), their phone cannot reach this mirror. Connect both phones to the same Wi-Fi.")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label("2. Guaranteed Fix: Personal Hotspot", systemImage: "personalhotspot")
+                            .font(.caption.bold())
+                        Text("In salons, cafes, or public places, routers block device-to-device traffic (AP Isolation). Turn ON Personal Hotspot in iPhone Settings and have your friend connect to your hotspot Wi-Fi. It works 100% anywhere!")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label("3. Pause VPN or Tailscale", systemImage: "network.badge.shield.half.filled")
+                            .font(.caption.bold())
+                        Text("If a VPN (Tailscale, WireGuard, NordVPN) is active on this iPhone, it can isolate local connections. Pause the VPN while streaming.")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(.top, 4)
+            },
+            label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "questionmark.circle.fill")
+                        .foregroundColor(.blue)
+                    Text("Friend can't open the QR link?")
+                        .font(.footnote.bold())
+                        .foregroundColor(.primary)
+                }
+            }
+        )
+        .padding(14)
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .cornerRadius(14)
+        .shadow(color: Color.black.opacity(0.03), radius: 4, y: 1)
     }
     
     private var noNetworkCard: some View {

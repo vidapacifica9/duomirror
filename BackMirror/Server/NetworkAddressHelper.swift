@@ -3,8 +3,22 @@ import Foundation
 /// Helper to detect the device's local IPv4 address across Wi-Fi and Personal Hotspot interfaces.
 enum NetworkAddressHelper {
     
+    enum NetworkKind {
+        case personalHotspot
+        case wifi
+        case localOther
+    }
+    
+    /// Determines the type of network currently being used based on the resolved IP.
+    static func getNetworkKind(for ip: String) -> NetworkKind {
+        if ip.hasPrefix("172.20.10.") {
+            return .personalHotspot
+        }
+        return .wifi
+    }
+    
     /// Returns the most appropriate local IPv4 address for hosting the mirror server.
-    /// Prefers Wi-Fi (`en0`), followed by Personal Hotspot (`bridge100`), then cellular or fallbacks.
+    /// Prefers Personal Hotspot (`bridge100`), then Wi-Fi (`en0`), and excludes cellular or VPN addresses.
     static func getLocalIPAddress() -> String? {
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         
@@ -22,35 +36,87 @@ enum NetworkAddressHelper {
             // Filter for IPv4 interfaces
             if addrFamily == UInt8(AF_INET) {
                 let name = String(cString: interface.ifa_name)
+                
+                // Exclude known non-routable or virtual interfaces immediately
+                guard !isIgnoredInterface(name: name) else { continue }
+                
                 var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
                 if getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
                                &hostname, socklen_t(hostname.count),
                                nil, socklen_t(0), NI_NUMERICHOST) == 0 {
                     let ip = String(cString: hostname)
-                    addresses[name] = ip
+                    // Only record if it is a genuine private local network address
+                    if isPrivateLAN(ip: ip) {
+                        addresses[name] = ip
+                    }
                 }
             }
         }
         
-        // Priority 1: Primary Wi-Fi ("en0")
-        if let wifi = addresses["en0"], !wifi.hasPrefix("127.") {
-            return wifi
-        }
-        
-        // Priority 2: iOS Personal Hotspot bridge ("bridge100")
+        // Priority 1: iOS Personal Hotspot bridge ("bridge100")
+        // If Personal Hotspot is active, connecting the guest phone to it provides a direct,
+        // zero-isolation peer-to-peer Wi-Fi connection with maximum reliability.
         if let hotspot = addresses["bridge100"] {
             return hotspot
         }
         
-        // Priority 3: Alternative hotspot / tethering interfaces
-        let tetherInterfaces = ["ap0", "en1", "en2", "pdp_ip0"]
+        // Priority 2: Primary Wi-Fi ("en0")
+        if let wifi = addresses["en0"] {
+            return wifi
+        }
+        
+        // Priority 3: Alternative local adapters (e.g. secondary Wi-Fi or USB-C Ethernet)
+        let tetherInterfaces = ["ap0", "en1", "en2"]
         for ifName in tetherInterfaces {
-            if let ip = addresses[ifName], !ip.hasPrefix("127.") && !ip.isEmpty {
+            if let ip = addresses[ifName] {
                 return ip
             }
         }
         
-        // Priority 4: Any non-loopback IPv4 address
-        return addresses.values.first(where: { !$0.hasPrefix("127.") && !$0.isEmpty })
+        // Priority 4: Any valid private LAN IP from remaining interfaces
+        return addresses.values.first
+    }
+    
+    /// Checks whether an IPv4 address is in standard RFC 1918 private LAN ranges
+    /// and rejects CGNAT (Carrier-Grade NAT / Tailscale 100.64.0.0/10), APIPA, and loopback.
+    private static func isPrivateLAN(ip: String) -> Bool {
+        let parts = ip.split(separator: ".").compactMap { Int($0) }
+        guard parts.count == 4 else { return false }
+        
+        // Exclude loopback (127.0.0.0/8)
+        if parts[0] == 127 { return false }
+        
+        // Exclude link-local / APIPA (169.254.0.0/16)
+        if parts[0] == 169 && parts[1] == 254 { return false }
+        
+        // Exclude Carrier-Grade NAT (RFC 6598: 100.64.0.0/10, i.e., 100.64.0.0 - 100.127.255.255)
+        // Used by cellular carriers (pdp_ip) and mesh VPNs like Tailscale.
+        if parts[0] == 100 && (64...127).contains(parts[1]) { return false }
+        
+        // Class A: 10.0.0.0 - 10.255.255.255
+        if parts[0] == 10 { return true }
+        
+        // Class B: 172.16.0.0 - 172.31.255.255 (iOS Personal Hotspot uses 172.20.10.1)
+        if parts[0] == 172 && (16...31).contains(parts[1]) { return true }
+        
+        // Class C: 192.168.0.0 - 192.168.255.255
+        if parts[0] == 192 && parts[1] == 168 { return true }
+        
+        return false
+    }
+    
+    /// Excludes cellular data (WAN), VPN tunnels, and internal Apple interfaces
+    /// that cannot be reached directly by guest devices.
+    private static func isIgnoredInterface(name: String) -> Bool {
+        let lower = name.lowercased()
+        if lower.hasPrefix("lo") { return true }       // Loopback
+        if lower.hasPrefix("pdp_ip") { return true }   // Cellular data (WAN - unreachable by peers)
+        if lower.hasPrefix("utun") { return true }     // VPN tunnel (Tailscale, WireGuard, WARP, etc.)
+        if lower.hasPrefix("ipsec") { return true }    // IPsec VPN tunnel
+        if lower.hasPrefix("ppp") { return true }      // Point-to-Point VPN
+        if lower.hasPrefix("awdl") { return true }     // Apple Wireless Direct Link (AirDrop internal)
+        if lower.hasPrefix("llw") { return true }      // Low Latency WLAN internal
+        if lower.hasPrefix("pan") { return true }      // Bluetooth PAN
+        return false
     }
 }

@@ -28,6 +28,10 @@ final class LocalMirrorServer: ObservableObject {
     private var listener: NWListener?
     private let serverQueue = DispatchQueue(label: "com.duomirror.serverQueue", qos: .userInteractive)
     
+    // Automatic network path monitoring to detect Wi-Fi / Hotspot changes
+    private var pathMonitor: NWPathMonitor?
+    private let monitorQueue = DispatchQueue(label: "com.duomirror.pathMonitor", qos: .utility)
+    
     // Active WebSocket client connections
     private var webSocketClients = Set<ClientConnection>()
     private let clientLock = NSLock()
@@ -40,13 +44,23 @@ final class LocalMirrorServer: ObservableObject {
     func refreshIP() {
         let ip = NetworkAddressHelper.getLocalIPAddress()
         DispatchQueue.main.async {
-            self.localIPAddress = ip
+            if self.localIPAddress != ip {
+                self.localIPAddress = ip
+            }
         }
     }
     
     func start() {
         guard !isRunning else { return }
         refreshIP()
+        
+        // Start monitoring network interface changes
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] _ in
+            self?.refreshIP()
+        }
+        monitor.start(queue: monitorQueue)
+        self.pathMonitor = monitor
         
         do {
             let tcpOptions = NWProtocolTCP.Options()
@@ -85,6 +99,9 @@ final class LocalMirrorServer: ObservableObject {
     }
     
     func stop() {
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        
         clientLock.lock()
         for client in webSocketClients {
             client.connection.cancel()
