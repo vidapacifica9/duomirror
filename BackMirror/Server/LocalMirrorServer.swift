@@ -161,11 +161,11 @@ final class LocalMirrorServer: ObservableObject {
             
             let requestString = String(decoding: data, as: UTF8.self)
             
-            if requestString.contains("Upgrade: websocket") || requestString.contains("upgrade: websocket") {
+            if requestString.localizedCaseInsensitiveContains("Upgrade: websocket") {
                 // Handle WebSocket upgrade
                 self.upgradeToWebSocket(connection: connection, request: requestString)
-            } else if requestString.starts(with: "GET / ") || requestString.starts(with: "GET /index.html") {
-                // Serve the HTML mirror client
+            } else if requestString.hasPrefix("GET ") {
+                // Serve the HTML mirror client for all GET requests (including /, /index.html, query params)
                 self.serveHTML(connection: connection)
             } else {
                 // 404 Not Found
@@ -181,6 +181,7 @@ final class LocalMirrorServer: ObservableObject {
         Content-Type: text/html; charset=utf-8\r
         Content-Length: \(htmlData.count)\r
         Connection: close\r
+        Access-Control-Allow-Origin: *\r
         Cache-Control: no-cache, no-store, must-revalidate\r
         \r
         
@@ -189,16 +190,14 @@ final class LocalMirrorServer: ObservableObject {
         var responseData = Data(responseHeaders.utf8)
         responseData.append(htmlData)
         
-        connection.send(content: responseData, completion: .contentProcessed { _ in
-            connection.cancel()
-        })
+        // isComplete: true cleanly transmits the full HTTP payload followed by a TCP FIN
+        // without prematurely aborting the socket with connection.cancel().
+        connection.send(content: responseData, isComplete: true, completion: .idempotent)
     }
     
     private func serveNotFound(connection: NWConnection) {
         let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-        connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
-            connection.cancel()
-        })
+        connection.send(content: Data(response.utf8), isComplete: true, completion: .idempotent)
     }
     
     private func upgradeToWebSocket(connection: NWConnection, request: String) {
