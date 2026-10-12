@@ -69,6 +69,7 @@ final class LocalMirrorServer: ObservableObject {
             
             let params = NWParameters(tls: nil, tcp: tcpOptions)
             params.allowLocalEndpointReuse = true
+            params.includePeerToPeer = true
             
             guard let endpointPort = NWEndpoint.Port(rawValue: port) else { return }
             let newListener = try NWListener(using: params, on: endpointPort)
@@ -78,12 +79,20 @@ final class LocalMirrorServer: ObservableObject {
             }
             
             newListener.stateUpdateHandler = { [weak self] state in
+                print("LocalMirrorServer listener state: \(state)")
                 DispatchQueue.main.async {
                     switch state {
                     case .ready:
                         self?.isRunning = true
-                    case .failed, .cancelled:
+                        print("LocalMirrorServer: LISTENER READY on port \(self?.port ?? 8080)")
+                    case .failed(let error):
                         self?.isRunning = false
+                        print("LocalMirrorServer: LISTENER FAILED: \(error)")
+                    case .cancelled:
+                        self?.isRunning = false
+                        print("LocalMirrorServer: LISTENER CANCELLED")
+                    case .waiting(let error):
+                        print("LocalMirrorServer: LISTENER WAITING: \(error)")
                     default:
                         break
                     }
@@ -150,16 +159,19 @@ final class LocalMirrorServer: ObservableObject {
     // MARK: - Connection Handling
     
     private func handleNewConnection(_ connection: NWConnection) {
+        print("LocalMirrorServer: Incoming connection from \(connection.endpoint)")
         connection.start(queue: serverQueue)
         
         // Read the initial HTTP request header
         connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, isComplete, error in
             guard let self = self, let data = data, error == nil else {
+                print("LocalMirrorServer: Initial receive error: \(String(describing: error))")
                 connection.cancel()
                 return
             }
             
             let requestString = String(decoding: data, as: UTF8.self)
+            print("LocalMirrorServer: Request received:\n\(requestString.prefix(120))")
             
             if requestString.localizedCaseInsensitiveContains("Upgrade: websocket") {
                 // Handle WebSocket upgrade
@@ -169,12 +181,14 @@ final class LocalMirrorServer: ObservableObject {
                 self.serveHTML(connection: connection)
             } else {
                 // 404 Not Found
+                print("LocalMirrorServer: Unrecognized request, returning 404")
                 self.serveNotFound(connection: connection)
             }
         }
     }
     
     private func serveHTML(connection: NWConnection) {
+        print("LocalMirrorServer: Serving HTML web client...")
         let htmlData = Data(WebClientContent.html.utf8)
         let responseHeaders = """
         HTTP/1.1 200 OK\r
@@ -190,14 +204,23 @@ final class LocalMirrorServer: ObservableObject {
         var responseData = Data(responseHeaders.utf8)
         responseData.append(htmlData)
         
-        // isComplete: true cleanly transmits the full HTTP payload followed by a TCP FIN
-        // without prematurely aborting the socket with connection.cancel().
-        connection.send(content: responseData, isComplete: true, completion: .idempotent)
+        connection.send(content: responseData, isComplete: true, completion: .contentProcessed { [weak connection] error in
+            if let error = error {
+                print("LocalMirrorServer: Error sending HTML: \(error)")
+            } else {
+                print("LocalMirrorServer: HTML successfully sent!")
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) {
+                connection?.cancel()
+            }
+        })
     }
     
     private func serveNotFound(connection: NWConnection) {
         let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-        connection.send(content: Data(response.utf8), isComplete: true, completion: .idempotent)
+        connection.send(content: Data(response.utf8), isComplete: true, completion: .contentProcessed { [weak connection] _ in
+            connection?.cancel()
+        })
     }
     
     private func upgradeToWebSocket(connection: NWConnection, request: String) {
