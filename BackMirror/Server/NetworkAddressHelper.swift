@@ -45,8 +45,8 @@ enum NetworkAddressHelper {
                                &hostname, socklen_t(hostname.count),
                                nil, socklen_t(0), NI_NUMERICHOST) == 0 {
                     let ip = String(cString: hostname)
-                    // Only record if it is a genuine private local network address
-                    if isPrivateLAN(ip: ip) {
+                    // Only record if it is a valid, usable local network address (not loopback, not link-local)
+                    if isValidUsableIP(ip: ip) {
                         addresses[name] = ip
                     }
                 }
@@ -73,36 +73,26 @@ enum NetworkAddressHelper {
             }
         }
         
-        // Priority 4: Any valid private LAN IP from remaining interfaces
+        // Priority 4: Any valid local IP from remaining allowed network interfaces
         return addresses.values.first
     }
     
-    /// Checks whether an IPv4 address is in standard RFC 1918 private LAN ranges
-    /// and rejects CGNAT (Carrier-Grade NAT / Tailscale 100.64.0.0/10), APIPA, and loopback.
-    private static func isPrivateLAN(ip: String) -> Bool {
+    /// Checks whether an IPv4 address is usable on a local network.
+    /// Excludes loopback (127.0.0.1), link-local APIPA (169.254.x.x), and invalid subnets.
+    private static func isValidUsableIP(ip: String) -> Bool {
         let parts = ip.split(separator: ".").compactMap { Int($0) }
         guard parts.count == 4 else { return false }
         
         // Exclude loopback (127.0.0.0/8)
         if parts[0] == 127 { return false }
         
-        // Exclude link-local / APIPA (169.254.0.0/16)
+        // Exclude link-local / APIPA (169.254.0.0/16) - assigned when DHCP fails
         if parts[0] == 169 && parts[1] == 254 { return false }
         
-        // Exclude Carrier-Grade NAT (RFC 6598: 100.64.0.0/10, i.e., 100.64.0.0 - 100.127.255.255)
-        // Used by cellular carriers (pdp_ip) and mesh VPNs like Tailscale.
-        if parts[0] == 100 && (64...127).contains(parts[1]) { return false }
+        // Exclude 0.0.0.0 and multicast (>= 224)
+        if parts[0] == 0 || parts[0] >= 224 { return false }
         
-        // Class A: 10.0.0.0 - 10.255.255.255
-        if parts[0] == 10 { return true }
-        
-        // Class B: 172.16.0.0 - 172.31.255.255 (iOS Personal Hotspot uses 172.20.10.1)
-        if parts[0] == 172 && (16...31).contains(parts[1]) { return true }
-        
-        // Class C: 192.168.0.0 - 192.168.255.255
-        if parts[0] == 192 && parts[1] == 168 { return true }
-        
-        return false
+        return true
     }
     
     /// Excludes cellular data (WAN), VPN tunnels, and internal Apple interfaces
